@@ -221,6 +221,31 @@ def candidate_keys(mode: str, username: str, sid: str, master_password):
     raise ValueError("未知密钥模式: %s" % mode)
 
 
+ALL_SCHEMES = ["md5_fixed", "sha256_sid", "sha256_user_sid", "sha256_rev_sid_user"]
+
+SCHEME_LABELS = {
+    "md5_fixed": "< 5.1：MD5(固定密钥)",
+    "sha256_sid": "5.1/5.2：SHA256(SID)",
+    "sha256_user_sid": "5.3~7.0：SHA256(用户名+SID)",
+    "sha256_rev_sid_user": ">= 7.1/8.x：SHA256(反转SID+用户名)",
+}
+
+
+def try_all_schemes(encrypted_b64, username, sid, master_password=None):
+    """用给定的用户名/SID 依次尝试所有版本方案，返回带命中的结果列表。"""
+    out = []
+    for mode in ALL_SCHEMES:
+        mp = master_password if mode != "md5_fixed" else None
+        plain, enc = decrypt_password(encrypted_b64, mode, username, sid, mp)
+        out.append({
+            "mode": mode,
+            "label": SCHEME_LABELS[mode],
+            "password": plain,
+            "encoding": enc if plain is not None else None,
+        })
+    return out
+
+
 def decode_plain(plain: bytes, hint_enc=None) -> str:
     """把解密出的字节转成字符串，优先按匹配到的编码提示尝试。"""
     attempts = []
@@ -261,8 +286,9 @@ def decrypt_password(encrypted_b64, mode, username="", sid="", master_password=N
         if checksum is None or hashlib.sha256(plain).digest() == checksum:
             return decode_plain(plain, enc), enc
 
-    return None, ("密钥不匹配：请检查 --username / --sid / --version / --master-password 是否正确"
-                  "（用户名是 Windows 系统账户名，SID 可用 whoami /user 查询）")
+    return None, ("密钥不匹配。常见原因：① 启用了主密码（改用 --master-password 重试）；"
+                  "② 用户名/SID 不对（是 Windows 系统账户，whoami /user 可查）；"
+                  "③ 版本判断有误。可用 --try-all 诊断到底命中了哪种方案。")
 
 
 def iter_xsh_files(target: str):
@@ -330,6 +356,45 @@ def process_file(path, args):
     return result
 
 
+def _run_try_all(files, args):
+    """诊断模式：对每个文件尝试所有版本方案。"""
+    for f in files:
+        info = parse_xsh(f)
+        print("文件: %s" % f)
+        if args.version or info["version"]:
+            print("  版本: %s" % (args.version or info["version"]))
+        if info["host"]:
+            print("  主机: %s" % info["host"])
+        if not info["password"]:
+            print("  [skipped] 无 Password 字段（可能未保存密码或使用密钥认证）")
+            print()
+            continue
+        schemes = try_all_schemes(info["password"],
+                                  args.username or "",
+                                  args.sid or "",
+                                  args.master_password)
+        matched = [s for s in schemes if s["mode"] != "md5_fixed" and s["password"] is not None]
+        print("  尝试所有密钥方案（用户名=%s，SID=%s）：" % (
+            args.username or "(未提供)", args.sid or "(未提供)"))
+        for s in schemes:
+            if s["mode"] == "md5_fixed":
+                mark, detail = "-", "(无校验和，仅供参考) " + repr(s["password"])
+            elif s["password"] is not None:
+                mark, detail = "✓", "密码: %s (编码: %s)" % (s["password"], s["encoding"])
+            else:
+                mark, detail = "✗", "不匹配"
+            print("    [%s] %-36s %s" % (mark, s["label"], detail))
+        if matched:
+            print("  结论: 命中 -> %s，密码: %s" % (matched[0]["label"], matched[0]["password"]))
+        else:
+            print("  结论: 没有任何方案通过校验和，极可能是启用了【主密码】。")
+            print("        → Xshell 菜单「工具 → 选项 → 安全」查看主密码是否已设置；")
+            print("        → 若已设置，用 --master-password \"你的主密码\" 重试；")
+            print("        → 否则确认 --username / --sid 与 whoami /user 输出完全一致。")
+        print()
+    return 0
+
+
 def self_test():
     """用公开测试向量验证算法正确性。"""
     cases = [
@@ -369,6 +434,8 @@ def main(argv=None):
     parser.add_argument("-v", "--version", help="覆盖 .xsh 中的版本号，例如 8.0")
     parser.add_argument("-m", "--master-password", help="若启用了主密码，请提供主密码")
     parser.add_argument("--json", action="store_true", help="以 JSON 格式输出")
+    parser.add_argument("--try-all", action="store_true",
+                        help="诊断模式：用给定用户名/SID 尝试所有版本方案，找出命中的方案")
     parser.add_argument("--self-test", action="store_true", help="运行自检后退出")
     args = parser.parse_args(argv)
 
@@ -382,6 +449,9 @@ def main(argv=None):
     if not files:
         print("未找到任何 .xsh 文件: %s" % args.target, file=sys.stderr)
         return 1
+
+    if args.try_all:
+        return _run_try_all(files, args)
 
     results = [process_file(f, args) for f in files]
 
