@@ -270,7 +270,9 @@ def decrypt_password(encrypted_b64, mode, username="", sid="", master_password=N
     except (binascii.Error, ValueError) as e:
         return None, "Base64 解码失败: %s" % e
 
-    if mode == "md5_fixed":
+    # 主密码模式与版本 >= 5.1 一样，密文末尾都带 32 字节校验和；
+    # 仅 < 5.1 的固定密钥模式不带校验和。
+    if master_password is None and mode == "md5_fixed":
         cipher, checksum = data, None
     else:
         if len(data) < 32:
@@ -409,6 +411,10 @@ def self_test():
          "S-1-5-21-2029295174-2268103727-2717561949-1000", None,
          "6WgMEKQvz4Y/PqCczXcPOXyCXJ0lwQZaHeRKIzPV7P6xvfaw2sUscA==",
          "test@!@#"),
+        # 主密码模式：密钥 = SHA256(主密码)，与用户名/SID 无关
+        ("sha256_rev_sid_user", "", "", "123123",
+         "Rrm3P3AL0iDV7nBbS2bHvh7ZAvuN1NSJl8ZFL11+UJ+82+KAixa89O3OTAfRTg==",
+         "This is a test"),
     ]
     ok = True
     for mode, user, sid, mp, cipher, expected in cases:

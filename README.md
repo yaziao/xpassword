@@ -30,6 +30,9 @@ python3 xshell_decrypt.py --self-test
 python3 xshell_decrypt.py session.xsh --master-password "你的主密码"
 ```
 
+> 启用主密码（每次打开 Xshell 都要先输一次密码）时，密钥是 `SHA256(主密码)`，
+> 与 Windows 用户名/SID 无关，此时**不要**再加 `-u` / `-s`。
+
 ### 获取用户名与 SID
 
 `-u` / `-s` 指的是**运行 Xshell 的 Windows 系统账户**的用户名和 SID，不是会话里的登录用户名（`UserName=` 字段）。
